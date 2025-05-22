@@ -377,8 +377,21 @@ def test_build_list_filters_and_overrides(ffmpeg_path):
     assert shlex.quote("output.mkv") in command_str
 
 
+def assert_option_value(args_list: list, option: str, expected_value: str, message: str = ""):
+    """Helper to assert that an option is followed by its expected value."""
+    try:
+        idx = args_list.index(option)
+        actual_value = args_list[idx + 1]
+        assert actual_value == expected_value, \
+            f"{message} Option '{option}' found, but value '{actual_value}' != expected '{expected_value}' in {args_list}"
+    except ValueError:
+        pytest.fail(f"{message} Option '{option}' not found in {args_list}")
+    except IndexError:
+        pytest.fail(f"{message} Option '{option}' found at end of list, no value, in {args_list}")
+
+
 def test_build_list_multi_output(ffmpeg_path):
-    builder = FFmpegCommandBuilder(ffmpeg_path=ffmpeg_path)
+    builder = FFmpegCommandBuilder(ffmpeg_path=ffmpeg_path, overwrite=True)  # -y is added by default
     builder.add_input("input.mp4")
     builder.add_output("output1.mkv")  # Output 0
     builder.add_output("output2.mp4")  # Output 1
@@ -390,38 +403,66 @@ def test_build_list_multi_output(ffmpeg_path):
     builder.set_codec("a:0", "aac", output_index=0)
 
     # Mapping for output 1
-    builder.map_stream("0:v:0", "v:0", output_index=1)
-    builder.map_stream("0:a:1", "a:0", output_index=1)  # Map second audio
-    builder.set_codec("v:0", "libvpx-vp9", output_index=1)
-    builder.set_codec("a:0", "libopus", output_index=1)
-    builder.add_output_option("-f", "mp4", output_index=1)  # Container format option
+    builder.map_stream("0:v:0", "v:0", output_index=1)  # Target v:0 for output 1
+    builder.map_stream("0:a:1", "a:0", output_index=1)  # Target a:0 for output 1 (from source 0:a:1)
+    builder.set_codec("v:0", "libvpx-vp9", output_index=1)  # For target v:0 of output 1
+    builder.set_codec("a:0", "libopus", output_index=1)  # For target a:0 of output 1
+    builder.add_output_option("-f", "mp4", output_index=1)
 
     command_list = builder.build_list()
-    command_str = " ".join(shlex.quote(arg) for arg in command_list)
+    # print(f"\nGenerated command for multi_output: {' '.join(shlex.quote(arg) for arg in command_list)}")
 
-    assert shlex.quote("output1.mkv") in command_str
-    assert shlex.quote("output2.mp4") in command_str
+    try:
+        output1_path_idx = command_list.index("output1.mkv")
+        output2_path_idx = command_list.index("output2.mp4")
+    except ValueError:
+        pytest.fail("Output paths not found in command list.")
 
-    # Check options are associated with the correct output
-    # Look for -map *before* output file path
-    output1_index = command_list.index("output1.mkv")
-    output2_index = command_list.index("output2.mp4")
+    # Determine the start of output options (after globals, inputs, filters)
+    # Simplified approach: find first -map or output-specific option if robust slicing is hard.
+    # For this specific test, the first map should belong to output1.
+    try:
+        first_map_idx = command_list.index("-map")
+    except ValueError:
+        pytest.fail("'-map' option not found, cannot reliably slice for output blocks.")
 
-    # Check output 0 arguments (before output1.mkv)
-    output1_args = command_list[command_list.index("-map"): output1_index + 1] #!TODO here error
-    assert "-map 0:v:0" in output1_args
-    assert "-map 0:a:0" in output1_args
-    assert "-c:v:0" in output1_args and "libx264" in output1_args
-    assert "-c:a:0" in output1_args and "aac" in output1_args
-    assert "-f" not in output1_args  # Format option should be with output 1
+    # Args for output 0 (from first map up to, but not including, its path)
+    # The build_output_args places maps, then stream_opts, then general_opts, then path
+    # So, the slice for options is [first_map_idx : output1_path_idx]
+    output1_options_block = command_list[first_map_idx: output1_path_idx]
 
-    # Check output 1 arguments (between output1.mkv and output2.mp4)
-    output2_args = command_list[output1_index + 1: output2_index + 1]
-    assert "-map 0:v:0" in output2_args
-    assert "-map 0:a:1" in output2_args  # Second audio mapped here
-    assert "-c:v:0" in output2_args and "libvpx-vp9" in output2_args
-    assert "-c:a:0" in output2_args and "libopus" in output2_args
-    assert "-f" in output2_args and "mp4" in output2_args
+    # Args for output 1 (from after output1_path up to, but not including, its path)
+    output2_options_block = command_list[output1_path_idx + 1: output2_path_idx]
+
+    # print(f"Output 1 options block: {output1_options_block}")
+    # print(f"Output 2 options block: {output2_options_block}")
+
+    # Check output 0 arguments
+    # Expected order due to sort_key: v:0 maps/opts, then a:0 maps/opts
+    assert "-map" in output1_options_block  # General check
+    # More specific map checks (order might vary based on map_stream calls if not sorted robustly by target)
+    # The builder sorts map keys by stream_specifier_sort_key, so v:0 then a:0
+    map_0v0_idx_out1 = output1_options_block.index("-map")
+    assert output1_options_block[map_0v0_idx_out1 + 1] == "0:v:0"
+    map_0a0_idx_out1 = output1_options_block.index("-map", map_0v0_idx_out1 + 2)  # Search after previous map
+    assert output1_options_block[map_0a0_idx_out1 + 1] == "0:a:0"
+
+    assert_option_value(output1_options_block, "-c:v:0", "libx264", "Output 1")
+    assert_option_value(output1_options_block, "-c:a:0", "aac", "Output 1")
+    assert "-f" not in output1_options_block  # Format option should be with output 1
+
+    # Check output 1 arguments
+    assert "-map" in output2_options_block
+    # Maps for output 1 (target v:0 from source 0:v:0, target a:0 from source 0:a:1)
+    # Sorted by target specifier: v:0 then a:0
+    map_0v0_idx_out2 = output2_options_block.index("-map")
+    assert output2_options_block[map_0v0_idx_out2 + 1] == "0:v:0"  # Source for v:0
+    map_0a1_idx_out2 = output2_options_block.index("-map", map_0v0_idx_out2 + 2)
+    assert output2_options_block[map_0a1_idx_out2 + 1] == "0:a:1"  # Source for a:0 is 0:a:1
+
+    assert_option_value(output2_options_block, "-c:v:0", "libvpx-vp9", "Output 2")
+    assert_option_value(output2_options_block, "-c:a:0", "libopus", "Output 2")
+    assert_option_value(output2_options_block, "-f", "mp4", "Output 2")
 
 
 def test_build_no_outputs(ffmpeg_path):
