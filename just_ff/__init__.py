@@ -56,5 +56,5 @@ __all__ = [
 # __all__.append("__version__")
 
 # Для простоты пока установим версию вручную
-__version__ = "0.1.1-beta"
+__version__ = "0.1.2-beta"
 __all__.append("__version__")

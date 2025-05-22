@@ -55,13 +55,9 @@ class FFmpegCommandBuilder:
         self._filters: typing.List[str] = []
         self._filter_complex_script: typing.Optional[str] = None
 
-        # --- Mapping and Options per Output Stream ---
-        # Stores mapping intent: {output_index: {output_specifier: source_specifier}}
-        # e.g., {0: {"v:0": "0:v:0", "a:0": "[merged_audio]"}, 1: {"v:0": "1:v:0"}}
-        self._maps: typing.Dict[int, typing.Dict[str, str]] = field(default_factory=dict)
-        # Stores options per output stream specifier: {output_index: {output_specifier: [opt1, val1, opt2, ...]}}
-        # e.g., {0: {"v:0": ["-c:v", "libx264", "-crf", "20"], "a:0": ["-c:a", "aac"]}}
-        self._output_stream_opts: typing.Dict[int, typing.Dict[str, typing.List[str]]] = field(default_factory=dict)
+        # --- Инициализируем словари как АТРИБУТЫ ЭКЗЕМПЛЯРА ---
+        self._maps: typing.Dict[int, typing.Dict[str, str]] = {}  # <<< ДОБАВЛЕНО СЮДА
+        self._output_stream_opts: typing.Dict[int, typing.Dict[str, typing.List[str]]] = {}  # <<< ДОБАВЛЕНО СЮДА
 
         if overwrite: self.add_global_option("-y")
 
@@ -180,8 +176,9 @@ class FFmpegCommandBuilder:
         """Internal helper to add options to a specific output stream for a given output file."""
         if output_index >= len(self._outputs): raise CommandBuilderError(
             f"Output index {output_index} out of range ({len(self._outputs)} outputs defined).")
-        if not output_specifier or ':' not in output_specifier: raise CommandBuilderError(
-            f"Invalid output_specifier format: '{output_specifier}'. Expected 'v:0', 'a:1', etc.")
+        if output_specifier != 'g' and (not output_specifier or ':' not in output_specifier):
+            raise CommandBuilderError(
+                f"Invalid output_specifier format: '{output_specifier}'. Expected 'v:0', 'a:1', etc.")
 
         # Ensure output_index and output_specifier keys exist
         self._output_stream_opts.setdefault(output_index, {})
