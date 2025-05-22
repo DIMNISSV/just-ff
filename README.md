@@ -6,23 +6,38 @@ A Python wrapper library for the FFmpeg and FFprobe command-line utilities.
 ![License](https://img.shields.io/github/license/DIMNISSV/just-ff) 
 ![Python Version](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 ![ffmpeg Version](https://img.shields.io/badge/ffmpeg-7.0%2B-darkgreen.svg)
+
 ## Introduction
 
-`just-ff` provides a clean, Pythonic interface to interact with FFmpeg and FFprobe, making it easier to integrate media processing and analysis into your Python applications without directly managing subprocess calls and complex command-line arguments. It aims to be a robust and flexible wrapper, separating the concerns of command building, process execution, and output parsing.
+`just-ff` provides a clean, Pythonic interface to interact with FFmpeg and FFprobe. It simplifies media processing and analysis in Python applications by abstracting away direct subprocess management and complex command-line argument construction. The library focuses on robust command building, process execution with progress reporting, structured output parsing, and sequential job queuing.
 
 ## Features
 
--   Run `ffprobe` to get detailed media information (`MediaInfo`, `StreamInfo`, `FormatInfo`).
--   Build complex `ffmpeg` command-lines programmatically using a builder pattern (`FFmpegCommandBuilder`).
--   Run `ffmpeg` commands with real-time percentage progress reporting.
--   Handle errors from FFmpeg/FFprobe processes with specific exceptions.
--   Minimal dependencies (primarily `subprocess`, `json`, `re`, `typing`, `dataclasses` from standard library).
+-   **FFprobe Integration (`FFprobeRunner`):**
+    -   Retrieve detailed media information (format, streams, codecs, duration, etc.).
+    -   Parsed output into convenient dataclasses (`MediaInfo`, `StreamInfo`, `FormatInfo`).
+-   **FFmpeg Command Building (`FFmpegCommandBuilder`):**
+    -   Programmatically construct complex FFmpeg commands with a fluent interface.
+    -   Manage global options, multiple inputs/outputs, input/output specific options.
+    -   Handle stream mapping (including from filter complex outputs).
+    -   Set codecs, bitrates, metadata, and custom options for output streams.
+    -   Define complex filter graphs.
+-   **FFmpeg Execution:**
+    -   Run FFmpeg commands with real-time percentage progress reporting (via `run_ffmpeg_with_progress` or `FFmpegCommandBuilder.run()`).
+    -   Capture process output and handle FFmpeg errors gracefully.
+-   **Job Queuing (`FFmpegQueueRunner`):**
+    -   Create and manage a queue of FFmpeg jobs.
+    -   Run jobs sequentially with callbacks for job/queue start, progress, and completion.
+    -   Option to stop queue on error or continue processing.
+    -   Cancel individual jobs or the entire queue.
+-   **Custom Exceptions:** Specific exceptions for common errors (`FfmpegExecutableNotFoundError`, `FfmpegProcessError`, `FfprobeJsonError`, `CommandBuilderError`).
+-   **Minimal Dependencies:** Relies primarily on Python's standard library.
 
 ## Installation
 
 You can install `just-ff` in several ways:
 
-### From GitHub (latest development version)
+### From GitHub
 
 **Using pip:**
 
@@ -44,236 +59,238 @@ cd just-ff
 poetry install
 ```
 
-### FFMPEG
+### Prerequisites
+
+**FFMPEG:**
 
 Make sure you have [FFMPEG](https://ffmpeg.org/download.html) installed and accessible in your system's PATH.
 `just-ff` is a wrapper, it does **not** include the FFmpeg binaries.
 
-### Python
+**Python:**
 
 Make sure you have [Python](https://www.python.org/downloads/) installed and accessible in your system's PATH.
 
-## Documentation
+## Quick Start
 
-### `just_ff.probe.FFprobeRunner`
-
-Class to run `ffprobe` commands and parse output into structured data.
+### 1. Probing Media Files
 
 ```python
 from just_ff import FFprobeRunner, FfmpegWrapperError, FileNotFoundError
 
-# Initialize the runner (defaults to 'ffprobe' in PATH)
-# You can specify a custom path: FFprobeRunner(ffprobe_path="/path/to/ffprobe")
-ffprobe = FFprobeRunner()
+ffprobe = FFprobeRunner() # Assumes ffprobe is in PATH
 
-# Get comprehensive media information
 try:
-    media_info = ffprobe.get_media_info("path/to/your/video.mp4")
+    media_info = ffprobe.get_media_info("input.mp4")
 
     print(f"File: {media_info.format.filename}")
-    print(f"Format: {media_info.format.format_name}")
-    print(f"Duration: {media_info.format.duration_sec:.2f} seconds")
-    print(f"Total Streams: {len(media_info.streams)}")
-
-    for i, stream in enumerate(media_info.streams):
-        print(f"  Stream #{stream.index}: Type={stream.codec_type}, Codec={stream.codec_name}")
+    print(f"Duration: {media_info.format.duration_sec:.2f}s")
+    for stream in media_info.streams:
+        print(f"  Stream #{stream.index} ({stream.codec_type}): {stream.codec_name}")
         if stream.codec_type == 'video':
-            print(f"    Resolution: {stream.width}x{stream.height}, FPS: {stream.frame_rate_float:.2f}")
+            print(f"    Res: {stream.width}x{stream.height}, FPS: {stream.frame_rate_float:.2f}")
         elif stream.codec_type == 'audio':
-             print(f"    Channels: {stream.channels}, Layout: {stream.channel_layout}, Sample Rate: {stream.sample_rate}")
-             print(f"    Bitrate: {stream.bit_rate / 1000 if stream.bit_rate else 'N/A'} kb/s")
-        if stream.language:
-             print(f"    Language: {stream.language}")
-        if stream.title:
-             print(f"    Title: {stream.title}")
+            print(f"    Sample Rate: {stream.sample_rate} Hz, Channels: {stream.channels}")
 
 except FileNotFoundError:
     print("Error: Input file not found.")
 except FfmpegWrapperError as e:
     print(f"FFprobe Error: {e}")
-    # Access specific error info if needed
-    # if isinstance(e, FfmpegProcessError):
-    #     print(f"Stderr:\n{e.stderr}")
-
-# Get just the duration
-try:
-    duration = ffprobe.get_duration("path/to/your/audio.aac")
-    if duration is not None:
-        print(f"Duration: {duration:.2f} seconds")
-    else:
-        print("Could not determine duration.")
-
-except FfmpegWrapperError as e:
-    print(f"FFprobe Error: {e}")
 ```
 
-### `just_ff.command.FFmpegCommandBuilder`
-
-Class to programmatically build complex `ffmpeg` command arguments.
+### 2. Building and Running an FFmpeg Command
 
 ```python
-from just_ff import FFmpegCommandBuilder, FfmpegWrapperError, FfmpegProcessError
-import os # For output file paths
+from just_ff import FFmpegCommandBuilder, FFprobeRunner # FFprobeRunner for duration
+from just_ff.exceptions import FfmpegProcessError
 
-# Initialize the builder (defaults to 'ffmpeg' in PATH)
-# overwrite=True adds -y by default
-ffmpeg = FFmpegCommandBuilder(overwrite=True)
-# You can specify a custom path: FFmpegCommandBuilder(ffmpeg_path="/path/to/ffmpeg")
+# Get input duration for progress reporting (optional but recommended)
+ffprobe = FFprobeRunner()
+input_duration = ffprobe.get_duration("input.mp4")
 
-# --- Add Global Options ---
-ffmpeg.add_global_option("-loglevel", "info")
-ffmpeg.add_global_option("-stats")
+ffmpeg = FFmpegCommandBuilder(overwrite=True) # -y global option by default
 
-# --- Add Input Files ---
-# add_input returns the input index (0-based)
-input1_idx = ffmpeg.add_input("path/to/input1.mp4", options=["-ss", "5"]) # Start input1 from 5s
-input2_idx = ffmpeg.add_input("path/to/input2.wav")
-input3_idx = ffmpeg.add_input("path/to/overlay.png", options=["-loop", "1", "-r", "25"]) # Loop image at 25 fps
+# Configure command
+input_idx = ffmpeg.add_input("input.mp4", options=["-ss", "10"]) # Start from 10s
+output_idx = ffmpeg.add_output("output_recode.mkv")
 
-# --- Add Filter Complex (Optional) ---
-# Filtergraph string using input stream specifiers (e.g., [0:v]) and output labels (e.g., [v_out])
-filter_graph = f"[{input1_idx}:v][{input3_idx}:v] overlay=x='mod(t,W)':enable='gte(t,2)':shortest=0 [v_out];" # Overlay image
-filter_graph += f"[{input2_idx}:a][{input1_idx}:a] amerge=inputs=2 [a_merged]" # Merge audio from input1 and input2
-ffmpeg.add_filter_complex(filter_graph)
+ffmpeg.map_stream(f"{input_idx}:v:0", "v:0", output_index=output_idx)
+ffmpeg.set_codec("v:0", "libx265", output_index=output_idx)
+ffmpeg.add_output_option("-preset", "medium", stream_specifier="v:0", output_index=output_idx)
+ffmpeg.add_output_option("-crf", "23", stream_specifier="v:0", output_index=output_idx)
 
-# --- Add Output Files ---
-# add_output returns the output index (usually 0 for the first output)
-output1_idx = ffmpeg.add_output("path/to/output/video.mp4")
-# You can add multiple outputs:
-# output2_idx = ffmpeg.add_output("path/to/output/audio.aac")
+ffmpeg.map_stream(f"{input_idx}:a:0", "a:0", output_index=output_idx)
+ffmpeg.set_codec("a:0", "aac", output_index=output_idx)
+ffmpeg.set_bitrate("a:0", "128k", output_index=output_idx)
 
-# --- Map Streams to Outputs ---
-# Map using map_stream(source_specifier, output_stream_specifier, output_index=0)
-# Source can be an input specifier (InputIndex:StreamType:StreamIndex, e.g., "0:v:0")
-# or a filter output label (e.g., "[v_out]").
-# Output stream specifier is type:index (e.g., "v:0", "a:1").
-ffmpeg.map_stream("[v_out]", "v:0", output_index=output1_idx) # Map filter output to output video stream 0
-ffmpeg.map_stream("[a_merged]", "a:0", output_index=output1_idx) # Map merged audio filter output to output audio stream 0
-# ffmpeg.map_stream(f"{input1_idx}:s:0", "s:0", output_index=output1_idx) # Map subtitle from input1
+print("Generated command:", ffmpeg.build())
 
-# --- Set Stream-Specific Output Options (Codecs, Bitrates, Metadata) ---
-# Use set_codec, set_bitrate, set_metadata, add_output_option
-# Arguments include output_stream_specifier (e.g., "v:0", "a:0") and output_index (default 0)
-
-# Video settings for output stream v:0 of output 0
-ffmpeg.set_codec("v:0", "libx264", output_index=output1_idx)
-ffmpeg.add_output_option("-preset", "medium", stream_specifier="v:0", output_index=output1_idx)
-ffmpeg.set_bitrate("v:0", "5000k", output_index=output1_idx) # Overrides CRF if > 0
-# Or use CRF: ffmpeg.add_output_option("-crf", "23", stream_specifier="v:0", output_index=output1_idx)
-
-# Audio settings for output stream a:0 of output 0
-ffmpeg.set_codec("a:0", "aac", output_index=output1_idx)
-ffmpeg.set_bitrate("a:0", "192k", output_index=output1_idx)
-ffmpeg.set_metadata("s:a:0", "language", "eng", output_index=output1_idx) # Metadata for stream a:0
-
-# Global metadata for output 0
-ffmpeg.set_metadata("g", "title", "My Converted Video", output_index=output1_idx)
-
-# --- Add General Output Options (e.g., container flags) ---
-# Use add_output_option(option, value, output_index=0)
-ffmpeg.add_output_option("-movflags", "+faststart", output_index=output1_idx)
-# You can also parse a string of options:
-# ffmpeg.add_parsed_options("-movflags +faststart -strict -2", output_index=output1_idx)
-
-# --- Build the command ---
-command_list = ffmpeg.build_list()
-command_string = ffmpeg.build() # Gets command as a string (with shlex.quote)
-
-print("Generated Command List:")
-print(command_list)
-print("\nGenerated Command String:")
-print(command_string)
-
-
-# --- Run the command ---
-# You need the duration of the *source* file(s) for progress reporting.
-# If using multiple inputs and complex filters, duration calculation for progress can be tricky.
-# For simple cases (single input or concat), use ffprobe on the input.
+# Run the command
 try:
-    # Get duration of the main input for progress (assuming input1.mp4 is main)
-    # Requires FFprobeRunner
-    # from just_ff import FFprobeRunner
-    # ffprobe = FFprobeRunner()
-    # duration_sec = ffprobe.get_duration("path/to/input1.mp4") # Pass this to run
-
-    print("\nRunning FFmpeg command...")
     ffmpeg.run(
-        duration_sec=None, # Set if you have duration for progress
-        progress_callback=lambda p: print(f"Progress: {p:.1f}%"), # Optional
-        process_callback=lambda proc: print(f"FFmpeg PID: {proc.pid}"), # Optional
-        check=True # Raise exception on non-zero exit code
+        duration_sec=input_duration,
+        progress_callback=lambda p: print(f"Progress: {p:.1f}%", end='\r'),
+        process_callback=lambda proc: print(f"FFmpeg PID: {proc.pid}"),
+        check=True # Raise FfmpegProcessError on failure
     )
-    print("FFmpeg command completed successfully.")
-
-except FfmpegExecutableNotFoundError as e:
-    print(f"Error: FFmpeg/FFprobe not found - {e}")
+    print("\nFFmpeg command completed successfully.")
 except FfmpegProcessError as e:
-    print(f"Error during FFmpeg execution: {e}")
-    print(f"Stderr:\n{e.stderr}") # Access detailed stderr
-except CommandBuilderError as e:
-    print(f"Error building FFmpeg command: {e}")
-except FfmpegWrapperError as e:
-    print(f"FFmpeg Wrapper Error: {e}")
+    print(f"\nError during FFmpeg execution (Code: {e.exit_code}):")
+    print(f"Command: {' '.join(e.command)}")
+    print(f"Stderr: {e.stderr}")
 except Exception as e:
-    print(f"An unexpected error occurred: {e}")
-
+    print(f"\nAn unexpected error occurred: {e}")
 ```
 
-### `just_ff.streams.MediaInfo`
+### 3. Using the FFmpeg Job Queue
 
-Dataclasses representing the structure of `ffprobe -show_streams -show_format -print_format json` output.
+```python
+from just_ff import FFmpegCommandBuilder, FFmpegQueueRunner, FFmpegJob
 
--   `MediaInfo`: Contains `format` (`FormatInfo`) and `streams` (`List[StreamInfo]`).
--   `FormatInfo`: Contains information about the container format.
--   `StreamInfo`: Contains information about a single stream (video, audio, subtitle, etc.). Includes helper properties like `duration_sec`, `frame_rate_float`, `language`, `title`, `is_default`, `is_forced`.
--   Helper functions `safe_float`, `safe_int` for robust type conversion.
+# --- Define Callbacks (optional) ---
+def my_job_start(idx, job: FFmpegJob):
+    print(f"[Q] Job {job.job_id or idx} started.")
 
-### `just_ff.exceptions`
+def my_job_progress(idx, job: FFmpegJob, percent: float):
+    print(f"\r[Q] Job {job.job_id or idx}: {percent:.1f}%", end="")
+    if percent == 100.0: print()
 
-Custom exception classes inheriting from `FfmpegWrapperError`:
+def my_job_complete(idx, job: FFmpegJob):
+    print(f"[Q] Job {job.job_id or idx} completed with status: {job.status}")
+    if job.status == "failed":
+        print(f"  Error: {job.error_message}")
 
--   `FfmpegExecutableNotFoundError`: FFmpeg/FFprobe not found.
--   `FfmpegProcessError`: Process exited with non-zero code. Includes command, exit code, stdout, stderr.
--   `FfprobeJsonError`: Failed to parse ffprobe output as JSON.
--   `CommandBuilderError`: Error during command building.
+def my_queue_complete(runner: FFmpegQueueRunner, processed_jobs: list[FFmpegJob]):
+    print(f"[Q] Queue finished. Processed {len(processed_jobs)} jobs.")
 
-### `just_ff.process`
+# --- Initialize Queue Runner ---
+queue_runner = FFmpegQueueRunner(
+    on_job_start=my_job_start,
+    on_job_progress=my_job_progress,
+    on_job_complete=my_job_complete,
+    on_queue_complete=my_queue_complete
+)
 
-Low-level functions for running subprocesses:
+# --- Create and Add Jobs ---
+# Job 1: Convert video to a different format
+builder1 = FFmpegCommandBuilder(overwrite=True)
+builder1.add_input("video.mp4").add_output("video_converted.webm")
+builder1.map_stream("0:v", "v:0").set_codec("v:0", "libvpx-vp9")
+builder1.map_stream("0:a", "a:0").set_codec("a:0", "libopus")
+# duration1 = ffprobe.get_duration("video.mp4") # Get duration for progress
+queue_runner.add_job(builder1, duration_sec=None, job_id="ConvertMP4toWebM")
 
--   `run_command(command, ...)`: Synchronously run a command, capture output, check exit code.
--   `run_ffmpeg_with_progress(command, duration_sec, progress_callback, process_callback, ...)`: Asynchronously run ffmpeg, parse stderr for progress, invoke callbacks.
+# Job 2: Extract audio
+builder2 = FFmpegCommandBuilder(overwrite=True)
+builder2.add_input("another_video.mkv").add_output("audio_extract.aac")
+builder2.map_stream("0:a:0", "a:0").set_codec("a:0", "aac").set_bitrate("a:0", "192k")
+# duration2 = ffprobe.get_duration("another_video.mkv")
+queue_runner.add_job(builder2, duration_sec=None, job_id="ExtractAudio")
+
+# --- Run the Queue ---
+print(f"Starting queue with {queue_runner.pending_job_count} jobs...")
+# This is a blocking call. For GUI apps, run this in a separate thread.
+processed_results = queue_runner.run_queue(stop_on_error=False)
+
+# `processed_results` contains a list of FFmpegJob objects with their final status.
+for job_result in processed_results:
+    print(f"Final status for {job_result.job_id}: {job_result.status}")
+```
+
+## Documentation
+
+### Core Components
+
+*   **`just_ff.probe.FFprobeRunner`**:
+    *   `get_media_info(file_path: str) -> MediaInfo`: Returns comprehensive format and stream information.
+    *   `get_duration(file_path: str) -> Optional[float]`: Gets the media duration in seconds.
+    *   `run_ffprobe(args: List[str]) -> Dict`: Runs a custom ffprobe command and returns parsed JSON.
+*   **`just_ff.command.FFmpegCommandBuilder`**:
+    *   `add_global_option(option: str, value: Optional[str] = None)`
+    *   `add_input(path: str, options: Optional[List[str]] = None, stream_map: Optional[Dict[str, str]] = None) -> int`
+    *   `add_output(path: str, options: Optional[List[str]] = None) -> int`
+    *   `map_stream(source_specifier: str, output_specifier: str, output_index: int = 0)`
+    *   `add_filter_complex(filter_graph: str)` / `add_filter_complex_script(script_path: str)`
+    *   `set_codec(output_specifier: str, codec: str, output_index: int = 0)`
+    *   `set_bitrate(output_specifier: str, bitrate: str, output_index: int = 0)`
+    *   `set_metadata(stream_specifier_metadata: str, key: str, value: str, output_index: int = 0)`
+    *   `add_output_option(option: str, value: Optional[str] = None, stream_specifier: Optional[str] = None, output_index: int = 0)`
+    *   `add_parsed_options(options_str: str, output_index: int = 0, stream_specifier: Optional[str] = None)`
+    *   `build_list() -> List[str]`: Returns the command as a list of arguments.
+    *   `build() -> str`: Returns the command as a shell-escaped string.
+    *   `run(...) -> bool`: Executes the built command with progress reporting.
+    *   `reset()`: Clears all settings in the builder.
+*   **`just_ff.queue.FFmpegQueueRunner`**:
+    *   `add_job(builder: FFmpegCommandBuilder, duration_sec: Optional[float], job_id: Optional[str], context: Any) -> FFmpegJob`
+    *   `run_queue(stop_on_error: bool = True) -> List[FFmpegJob]`
+    *   `cancel_current_job() -> bool`
+    *   `cancel_queue()`
+    *   `clear_pending_jobs() -> int`
+    *   Properties: `is_running`, `active_job`, `pending_job_count`
+    *   Callback parameters for `on_job_start`, `on_job_progress`, `on_job_process_created`, `on_job_complete`, `on_queue_start`, `on_queue_complete`.
+*   **`just_ff.queue.FFmpegJob` (Dataclass)**: Represents a job in the queue, holding the builder, parameters, and status.
+
+### Data Structures (`just_ff.streams`)
+
+*   **`MediaInfo`**: Container for `format` (`FormatInfo`) and `streams` (`List[StreamInfo]`).
+*   **`FormatInfo`**: Information about the media container format.
+*   **`StreamInfo`**: Information about a single media stream (video, audio, subtitle). Includes helper properties like `duration_sec`, `frame_rate_float`, `language`, `title`, `is_default`, `is_forced`.
+*   Helper functions `safe_float()`, `safe_int()` for robust type conversion.
+
+### Exceptions (`just_ff.exceptions`)
+
+Custom exceptions inherit from `FfmpegWrapperError`:
+
+*   `FfmpegExecutableNotFoundError`: FFmpeg/FFprobe executable not found.
+*   `FfmpegProcessError`: FFmpeg/FFprobe process exited with a non-zero code. Includes command, exit code, stdout, and stderr.
+*   `FfprobeJsonError`: Failed to parse ffprobe output as JSON.
+*   `CommandBuilderError`: Error during FFmpeg command construction.
+
+### Low-level Process Utilities (`just_ff.process`)
+
+*   `run_command(command: List[str], ...)`: Synchronously runs an external command.
+*   `run_ffmpeg_with_progress(command: List[str], duration_sec: Optional[float], ...)`: Runs FFmpeg, parsing stderr for progress.
 
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request or open an Issue for bugs, feature requests, or improvements.
 
-Before submitting a pull request, please ensure your code follows the project's style guidelines (PEP 8) and that all tests pass.
+Before submitting a pull request, please ensure your code:
+1.  Adheres to PEP 8 style guidelines.
+2.  Includes tests for new features or bug fixes.
+3.  All existing and new tests pass (`poetry run pytest`).
 
-1.  Fork the repository.
-2.  Create a new branch (`git checkout -b feature/your-feature`).
-3.  Implement your feature or fix your bug.
-4.  Write tests for your changes.
-5.  Ensure all tests pass (`poetry run pytest`).
-6.  Commit your changes (`git commit -m 'feat: Add your feature'`).
-7.  Push to the branch (`git push origin feature/your-feature`).
-8.  Open a Pull Request.
+**Development Setup:**
+
+```bash
+git clone https://github.com/DIMNISSV/just-ff.git
+cd just-ff
+poetry install # Installs dependencies, including dev dependencies like pytest
+```
+
+**Workflow:**
+
+1.  Create a new branch (`git checkout -b feature/your-awesome-feature`).
+2.  Implement your changes and write tests.
+3.  Run tests: `poetry run pytest`.
+4.  Commit your changes (`git commit -m 'feat: Add awesome feature'`).
+5.  Push to the branch (`git push origin feature/your-awesome-feature`).
+6.  Open a Pull Request on GitHub.
 
 ## Donate
 
-You can support the development of this project via Monero:
+If you find this library useful and wish to support its development, you can contribute via Monero:
 
 `87QGCoHeYz74Ez22geY1QHerZqbN5J2z7JLNgyWijmrpCtDuw66kR7UQsWXWd6QCr3G86TBADcyFX5pNaqt7dpsEHE9HBJs`
 
-[![imageban](https://i4.imageban.ru/thumbs/2025.04.15/566393a122f2a27b80defcbe9b074dc0.png)](https://imageban.ru/show/2025/04/15/566393a122f2a27b80defcbe9b074dc0/png)
+[![Monero QR Code](https://i4.imageban.ru/thumbs/2025.04.15/566393a122f2a27b80defcbe9b074dc0.png)](https://imageban.ru/show/2025/04/15/566393a122f2a27b80defcbe9b074dc0/png)
 
-I will also be happy to arrange any other way for you to transfer funds, please contact me.
+Alternative ways to support the project can be arranged; please feel free to contact me.
 
 ## Contacts
 
-*   Telegram: [@dimnissv](https://t.me/dimnissv)
-*   Email: [dimnissv@yandex.kz](mailto:dimnissv@yandex.kz)
+*   **Telegram:** [@dimnissv](https://t.me/dimnissv)
+*   **Email:** [dimnissv@yandex.kz](mailto:dimnissv@yandex.kz)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE.md](LICENSE.md) file for details.
+This project is licensed under the MIT License. See the [LICENSE.md](LICENSE.md) file for details.
