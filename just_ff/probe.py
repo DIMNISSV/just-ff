@@ -17,7 +17,7 @@ from just_ff.exceptions import (
 class FFprobeRunner:
     """Runs ffprobe commands to get media information."""
 
-    DEFAULT_ARGS = ["-v", "quiet", "-print_format", "json"]
+    DEFAULT_ARGS = ["-v", "error", "-print_format", "json"]
 
     def __init__(self, ffprobe_path: str = "ffprobe"):
         """
