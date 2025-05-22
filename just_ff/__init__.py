@@ -16,6 +16,7 @@ from .streams import MediaInfo, StreamInfo, FormatInfo, safe_float, safe_int
 from .process import run_command, run_ffmpeg_with_progress
 from .probe import FFprobeRunner
 from .command import FFmpegCommandBuilder
+from .queues import FFmpegQueueRunner, FFmpegJob
 
 __all__ = [
     "FfmpegWrapperError",
@@ -32,6 +33,8 @@ __all__ = [
     "run_ffmpeg_with_progress",
     "FFprobeRunner",
     "FFmpegCommandBuilder",
+    "FFmpegQueueRunner",
+    "FFmpegJob"
 ]
 
 # --- Информация о версии пакета ---
@@ -56,5 +59,5 @@ __all__ = [
 # __all__.append("__version__")
 
 # Для простоты пока установим версию вручную
-__version__ = "0.1.3-beta"
+__version__ = "0.2.0-alpha"
 __all__.append("__version__")
