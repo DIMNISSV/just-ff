@@ -1,6 +1,6 @@
 [project]
 name = "just-ff"
-version = "0.1.3-beta"
+version = "0.2.0-alpha"
 description = ""
 authors = [
     {name = "dimnissv",email = "dimnissv@yandex.kz"}
